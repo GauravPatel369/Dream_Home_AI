@@ -945,3 +945,181 @@ body {
   .gallery-section, .listings-section { padding: 3rem 1rem; }
   .room-tabs { gap: 0.35rem; }
 }
+
+/* ─── ENHANCEMENT 4: Skeleton loading ─── */
+.room-skeleton {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  background: var(--dark-3);
+  border-radius: var(--radius);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.skeleton-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(201,168,76,0.07) 40%,
+    rgba(201,168,76,0.13) 50%,
+    rgba(201,168,76,0.07) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-label {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.skeleton-spinner {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid rgba(201,168,76,0.25);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Tab loading indicator */
+.room-tab.loading {
+  color: var(--gold);
+  border-color: rgba(201,168,76,0.3);
+}
+
+.tab-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(201,168,76,0.3);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-left: 2px;
+}
+
+/* Inline generating status in hero */
+.generating-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.gen-dots {
+  display: flex;
+  gap: 4px;
+}
+
+.gen-dots span {
+  width: 6px;
+  height: 6px;
+  background: var(--gold);
+  border-radius: 50%;
+  animation: dotPulse 1.4s ease-in-out infinite;
+}
+
+.gen-dots span:nth-child(2) { animation-delay: 0.2s; }
+.gen-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dotPulse {
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+.gen-inline-label {
+  font-size: 0.85rem;
+  color: var(--gold);
+}
+
+/* ─── ENHANCEMENT 5: Regenerate button ─── */
+.room-overlay-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-regen {
+  width: 32px;
+  height: 32px;
+  background: rgba(15,14,12,0.75);
+  border: 1px solid var(--border);
+  color: var(--gold);
+  border-radius: 50%;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.btn-regen:hover:not(:disabled) {
+  background: rgba(201,168,76,0.2);
+  border-color: var(--gold);
+  transform: rotate(30deg);
+}
+
+.btn-regen:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-regen.spinning {
+  animation: regenSpin 0.7s linear infinite;
+}
+
+@keyframes regenSpin {
+  to { transform: rotate(360deg); }
+}
+
+.btn-regen-full {
+  width: 100%;
+  margin-top: 1rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: var(--transition);
+  text-align: center;
+}
+
+.btn-regen-full:hover:not(:disabled) {
+  color: var(--gold);
+  border-color: rgba(201,168,76,0.4);
+}
+
+.btn-regen-full:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Share button disabled state */
+.btn-share:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}

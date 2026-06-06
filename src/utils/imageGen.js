@@ -42,12 +42,30 @@ export const buildImagePrompts = (answers) => {
   };
 };
 
-const generateSingleImage = async (prompt, room, style) => {
+// Enhancement 1: Convert image URL to persistent base64 to prevent expiry & fix html2canvas
+const urlToBase64 = async (url) => {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return url; // fallback to raw URL if conversion fails
+  }
+};
+
+export const generateSingleImage = async (prompt, room, style) => {
   const apiKey = process.env.REACT_APP_OPENAI_API_KEY;
 
   if (!apiKey) {
     console.warn("REACT_APP_OPENAI_API_KEY not set — using fallback images.");
-    return { url: getFallbackImage(room, style), prompt, status: "fallback" };
+    const fallbackUrl = getFallbackImage(room, style);
+    const base64 = await urlToBase64(fallbackUrl);
+    return { url: base64, prompt, status: "fallback" };
   }
 
   const response = await fetch("https://api.openai.com/v1/images/generations", {
@@ -72,18 +90,20 @@ const generateSingleImage = async (prompt, room, style) => {
   }
 
   const data = await response.json();
-  const url = data.data?.[0]?.url;
-  if (!url) throw new Error("No image URL returned from DALL-E");
+  const rawUrl = data.data?.[0]?.url;
+  if (!rawUrl) throw new Error("No image URL returned from DALL-E");
 
-  return { url, prompt, status: "generated" };
+  // Convert to base64 immediately — DALL-E URLs expire in ~1 hour
+  const base64 = await urlToBase64(rawUrl);
+  return { url: base64, prompt, status: "generated" };
 };
 
-export const generateHomeImages = async (answers) => {
+// Enhancement 4: Stream results — calls onRoomReady(room, result) as each room completes
+export const generateHomeImages = async (answers, onRoomReady) => {
   const prompts = buildImagePrompts(answers);
-  const rooms = ["bedroom", "kitchen", "exterior", "workspace"];
+  const rooms = ["exterior", "bedroom", "kitchen", "workspace"];
   const imageResults = {};
 
-  // Generate sequentially to avoid OpenAI rate limits (DALL-E 3 = 5 img/min on tier 1)
   for (const room of rooms) {
     try {
       const result = await generateSingleImage(prompts[room], room, answers.style);
@@ -93,14 +113,18 @@ export const generateHomeImages = async (answers) => {
         status: result.status,
       };
     } catch (err) {
-      console.error(`DALL-E generation failed for ${room}:`, err.message);
+      console.error(`Generation failed for ${room}:`, err.message);
+      const fallbackUrl = getFallbackImage(room, answers.style);
+      const base64 = await urlToBase64(fallbackUrl);
       imageResults[room] = {
-        placeholder: getFallbackImage(room, answers.style),
+        placeholder: base64,
         prompt: prompts[room],
         status: "fallback",
         error: err.message,
       };
     }
+    // Notify parent immediately so UI updates per room
+    if (onRoomReady) onRoomReady(room, imageResults[room]);
   }
 
   return imageResults;
@@ -161,7 +185,6 @@ export const getArchetype = (answers) => {
     "creative-modern": { name: "The Art Technologist", tagline: "Precision as poetry, function as art", color: "#0F172A", accent: "#38BDF8" },
     "creative-scandinavian": { name: "The Forest Curator", tagline: "Nature and art in perfect dialogue", color: "#14532D", accent: "#86EFAC" },
   };
-
   const key = `${vibe}-${style}`;
   return archetypes[key] || { name: "The Free Spirit", tagline: "Unapologetically you — rules are for decorating", color: "#374151", accent: "#9CA3AF" };
 };
@@ -169,12 +192,37 @@ export const getArchetype = (answers) => {
 export const getMatchedListings = (answers, allListings) => {
   const { vibe, style, location, budget } = answers;
   const preferences = [style, vibe, location, budget].filter(Boolean);
-
   const scored = allListings.map((listing) => {
     const overlap = listing.vibes.filter((v) => preferences.includes(v)).length;
     const score = Math.round(70 + (overlap / preferences.length) * 28 + Math.random() * 5);
     return { ...listing, match: Math.min(score, 99) };
   });
-
   return scored.sort((a, b) => b.match - a.match).slice(0, 4);
+};
+
+// Enhancement 3: Smart Snaphomz URL with encoded filters + UTM tracking
+export const buildSnaphomzUrl = (answers, archetype) => {
+  const budgetRangeMap = {
+    starter: "0-5000000",
+    mid: "5000000-15000000",
+    premium: "15000000-30000000",
+    luxury: "30000000-999999999",
+  };
+  const locationTypeMap = {
+    city: "urban",
+    suburban: "suburban",
+    nature: "countryside",
+    coastal: "coastal",
+  };
+  const params = new URLSearchParams({
+    style: answers.style || "",
+    location_type: locationTypeMap[answers.location] || "",
+    budget_range: budgetRangeMap[answers.budget] || "",
+    vibe: answers.vibe || "",
+    utm_source: "dream-home-ai",
+    utm_medium: "quiz",
+    utm_campaign: archetype?.name?.toLowerCase().replace(/\s+/g, "-") || "dream-home",
+    utm_content: `${answers.vibe}-${answers.style}`,
+  });
+  return `https://snaphomz.com/search?${params.toString()}`;
 };
