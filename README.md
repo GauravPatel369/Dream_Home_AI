@@ -279,11 +279,7 @@ The optimised bundle lands in `/build`. Deploy to:
 
 ---
 
-## 📄 License
 
-MIT — free to use, modify, and deploy.
-
----
 
 ## 🏠 Built for Snaphomz
 This project is designed as a top-of-funnel viral tool for [Snaphomz](https://snaphomz.com/) — converting aspirational browsers into warm, intent-rich leads.

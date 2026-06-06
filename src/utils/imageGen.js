@@ -75,12 +75,12 @@ export const generateSingleImage = async (prompt, room, style) => {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "dall-e-3",
+      // Use the OpenAI Images API model that is currently supported
+      model: "gpt-image-1",
       prompt,
       n: 1,
-      size: "1792x1024",
-      quality: "hd",
-      style: "natural",
+      // use a supported square size to avoid API errors
+      size: "1024x1024",
     }),
   });
 
@@ -109,12 +109,21 @@ export const generateSingleImage = async (prompt, room, style) => {
   }
 
   const data = await response.json();
-  const rawUrl = data.data?.[0]?.url;
-  if (!rawUrl) throw new Error("No image URL returned from DALL-E");
+  const entry = data.data?.[0] || {};
 
-  // Convert to base64 immediately — DALL-E URLs expire in ~1 hour
-  const base64 = await urlToBase64(rawUrl);
-  return { url: base64, prompt, status: "generated" };
+  // OpenAI may return either a URL or base64 -- handle both.
+  if (entry.url) {
+    const base64 = await urlToBase64(entry.url).catch(() => entry.url);
+    return { url: base64, prompt, status: "generated" };
+  }
+
+  if (entry.b64_json) {
+    // data is base64-encoded image bytes
+    const dataUrl = `data:image/png;base64,${entry.b64_json}`;
+    return { url: dataUrl, prompt, status: "generated" };
+  }
+
+  throw new Error("No image returned from DALL-E response");
 };
 
 // Enhancement 4: Stream results — calls onRoomReady(room, result) as each room completes
