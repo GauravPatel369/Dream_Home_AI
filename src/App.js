@@ -21,15 +21,20 @@ export default function App() {
   const [step, setStep] = useState(STEPS.INTRO);
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState({});
+  // Keep an editable copy of questions so users can add options/questions at runtime
+  const [questions, setQuestions] = useState(QUIZ_QUESTIONS);
   const [images, setImages] = useState({});
   const [archetype, setArchetype] = useState(null);
   const [listings, setListings] = useState([]);
   const [activeRoom, setActiveRoom] = useState("exterior");
+  const [apiStatus, setApiStatus] = useState({ ok: true, message: null, code: null });
   const [shareSuccess, setShareSuccess] = useState(false);
   const [regenerating, setRegenerating] = useState(null);
   // Enhancement 4: track which rooms are still loading
   const [loadingRooms, setLoadingRooms] = useState({});
   const shareCardRef = useRef(null);
+  // track latest generation id per room to avoid stale async overwrites
+  const latestRoomGen = useRef({});
 
   const handleStart = () => {
     setStep(STEPS.QUIZ);
@@ -41,7 +46,7 @@ export default function App() {
     const newAnswers = { ...answers, [questionId]: optionId };
     setAnswers(newAnswers);
 
-    if (currentQ < QUIZ_QUESTIONS.length - 1) {
+    if (currentQ < questions.length - 1) {
       setTimeout(() => setCurrentQ((q) => q + 1), 300);
     } else {
       // Enhancement 4: go to results immediately, show skeletons
@@ -58,9 +63,27 @@ export default function App() {
       setStep(STEPS.RESULTS);
 
       // Enhancement 4: stream results — each room updates UI as it finishes
+      const batchId = Date.now();
+      // record batch id for every room so we can ignore stale results
+      ROOMS.forEach((r) => (latestRoomGen.current[r] = batchId));
+      console.debug("generateHomeImages batch start", { batchId, answers: newAnswers });
       await generateHomeImages(newAnswers, (room, result) => {
+        console.debug("generateHomeImages callback", { batchId, room, result });
+        // ignore if a newer generation was started for this room
+        if (latestRoomGen.current[room] !== batchId) {
+          console.debug("Stale initial result ignored", { room, batchId, current: latestRoomGen.current[room] });
+          return;
+        }
         setImages((prev) => ({ ...prev, [room]: result }));
         setLoadingRooms((prev) => ({ ...prev, [room]: false }));
+
+        // Surface API errors to the UI so user knows we're using fallbacks
+        if (result?.status === "unauthorized") {
+          setApiStatus({ ok: false, message: "Image API unauthorized or API key missing. Showing fallback images.", code: "unauthorized" });
+        } else if (result?.status === "quota") {
+          setApiStatus({ ok: false, message: "Image API quota exceeded. Showing fallback images.", code: "quota" });
+        }
+
         // Auto-switch to first completed room
         setActiveRoom((current) => {
           if (current === "exterior" && room !== "exterior") return current;
@@ -69,6 +92,25 @@ export default function App() {
       });
     }
   }, [answers, currentQ]);
+
+  // Allow adding a custom option to the current question at runtime
+  const handleAddOption = (label, emoji = "", desc = "") => {
+    const q = questions[currentQ];
+    const newOpt = { id: `${q.id}-custom-${Date.now()}`, label, emoji, desc };
+    const updated = questions.map((item, idx) => (idx === currentQ ? { ...item, options: [...item.options, newOpt] } : item));
+    setQuestions(updated);
+  };
+
+  // Allow adding an entirely new question (minimal fields)
+  const handleAddQuestion = (questionText, subtitle = "", firstOptionLabel = "Custom") => {
+    const newQ = {
+      id: `q_custom_${Date.now()}`,
+      question: questionText,
+      subtitle,
+      options: [{ id: `opt_${Date.now()}`, label: firstOptionLabel, emoji: "", desc: "User added" }],
+    };
+    setQuestions((prev) => [...prev, newQ]);
+  };
 
   const handleBack = () => {
     if (currentQ > 0) setCurrentQ((q) => q - 1);
@@ -87,22 +129,59 @@ export default function App() {
   };
 
   // Enhancement 5: per-room regeneration
-  const handleRegenerate = async (room) => {
+  const handleRegenerate = async (room, promptOverride) => {
     if (regenerating) return;
     setRegenerating(room);
+    // mark this room as loading (shows skeleton)
+    setLoadingRooms((prev) => ({ ...prev, [room]: true }));
+
+    // create a unique id for this regeneration and record it so older async
+    // results (from the initial batch) won't overwrite this newer result
+    const myId = Date.now();
+    latestRoomGen.current[room] = myId;
+
+    console.debug("handleRegenerate start", { room, myId, promptOverride });
+
+    const prompts = buildImagePrompts(answers);
+    const promptToUse = promptOverride || prompts?.[room] || "";
+
+    // optimistic UI: mark status generating
+    setImages((prev) => ({
+      ...prev,
+      [room]: { ...(prev[room] || {}), status: "generating", prompt: promptToUse },
+    }));
+
     try {
-      const prompts = buildImagePrompts(answers);
-      const result = await generateSingleImage(prompts[room], room, answers.style);
+      const result = await generateSingleImage(promptToUse, room, answers.style);
+      console.debug("handleRegenerate result", { room, myId, status: result?.status });
+      // if the image API returned an error-like status, reflect in apiStatus
+      if (result?.status === "unauthorized") {
+        setApiStatus({ ok: false, message: "Image API unauthorized or API key missing. Showing fallback images.", code: "unauthorized" });
+      } else if (result?.status === "quota") {
+        setApiStatus({ ok: false, message: "Image API quota exceeded. Showing fallback images.", code: "quota" });
+      }
       setImages((prev) => ({
         ...prev,
-        [room]: { placeholder: result.url, prompt: result.prompt, status: result.status },
+        [room]: { placeholder: result.url, prompt: result.prompt || promptToUse, status: result.status },
       }));
     } catch (err) {
-      console.error("Regeneration failed:", err.message);
+      console.error("Regeneration failed:", err?.message || err);
+      const fallbackUrl = getFallbackImage(room, answers.style);
+      setImages((prev) => ({
+        ...prev,
+        [room]: { placeholder: fallbackUrl, prompt: promptToUse, status: "fallback", error: err?.message || String(err) },
+      }));
     } finally {
+      // only clear loading if this regeneration is still the latest
+      if (latestRoomGen.current[room] === myId) {
+        setLoadingRooms((prev) => ({ ...prev, [room]: false }));
+      }
       setRegenerating(null);
     }
   };
+
+  // Allow user to provide a custom prompt per room and generate from it
+  const [customPrompts, setCustomPrompts] = useState({});
 
   // Enhancement 2 + 3: Web Share API with native sheet on mobile, download on desktop
   const handleShare = async () => {
@@ -160,16 +239,23 @@ export default function App() {
 
   return (
     <div className="app">
+      {!apiStatus.ok && (
+        <div className="api-alert-top" role="alert" style={{ textAlign: "center", padding: "8px 12px", background: "#3b2f1b", color: "#ffdca8" }}>
+          {apiStatus.message} {apiStatus.code ? `(${apiStatus.code})` : null}
+        </div>
+      )}
       {step === STEPS.INTRO && <IntroScreen onStart={handleStart} />}
 
       {step === STEPS.QUIZ && (
         <QuizScreen
-          question={QUIZ_QUESTIONS[currentQ]}
+          question={questions[currentQ]}
           questionIndex={currentQ}
-          total={QUIZ_QUESTIONS.length}
-          selectedAnswer={answers[QUIZ_QUESTIONS[currentQ].id]}
-          onAnswer={(optId) => handleAnswer(QUIZ_QUESTIONS[currentQ].id, optId)}
+          total={questions.length}
+          selectedAnswer={answers[questions[currentQ].id]}
+          onAnswer={(optId) => handleAnswer(questions[currentQ].id, optId)}
           onBack={handleBack}
+          onAddOption={handleAddOption}
+          onAddQuestion={handleAddQuestion}
         />
       )}
 
@@ -204,6 +290,11 @@ export default function App() {
               <div className="archetype-badge">Your Home Personality</div>
               <h1 className="archetype-name">{archetype.name}</h1>
               <p className="archetype-tagline">"{archetype.tagline}"</p>
+              {!apiStatus.ok && (
+                <div className="api-alert" role="status">
+                  {apiStatus.message}
+                </div>
+              )}
               {!allRoomsLoaded && (
                 <div className="generating-inline">
                   <div className="gen-dots">
@@ -284,17 +375,34 @@ export default function App() {
                 </div>
               </div>
 
-              {images[activeRoom]?.prompt && !isRoomLoading(activeRoom) && (
+              {(!isRoomLoading(activeRoom)) && (
                 <div className="room-prompt-card">
                   <span className="prompt-label">Design Prompt</span>
-                  <p className="prompt-text">{images[activeRoom].prompt}</p>
-                  <button
-                    className="btn-regen-full"
-                    onClick={() => handleRegenerate(activeRoom)}
-                    disabled={!!regenerating}
-                  >
-                    {regenerating === activeRoom ? "Generating..." : "↺ Generate New Version"}
-                  </button>
+                  <p className="prompt-text">{images[activeRoom]?.prompt || "(No prompt available)"}</p>
+                  <div className="custom-prompt-row">
+                    <textarea
+                      className="custom-prompt-input"
+                      placeholder="Write your own prompt to generate this room..."
+                      value={customPrompts[activeRoom] || ""}
+                      onChange={(e) => setCustomPrompts((p) => ({ ...p, [activeRoom]: e.target.value }))}
+                    />
+                  </div>
+                  <div className="prompt-actions">
+                    <button
+                      className="btn-regen-full"
+                      onClick={() => handleRegenerate(activeRoom)}
+                      disabled={!!regenerating}
+                    >
+                      {regenerating === activeRoom ? "Generating..." : "↺ Generate New Version"}
+                    </button>
+                    <button
+                      className="btn-use-prompt"
+                      onClick={() => handleRegenerate(activeRoom, customPrompts[activeRoom])}
+                      disabled={!!regenerating || !customPrompts[activeRoom]}
+                    >
+                      Use My Prompt
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -360,11 +468,62 @@ function IntroScreen({ onStart }) {
   );
 }
 
-function QuizScreen({ question, questionIndex, total, selectedAnswer, onAnswer, onBack }) {
+function QuizScreen({ question, questionIndex, total, selectedAnswer, onAnswer, onBack, onAddOption, onAddQuestion }) {
+  const [showAddOption, setShowAddOption] = useState(false);
+  const [optLabel, setOptLabel] = useState("");
+  const [optEmoji, setOptEmoji] = useState("");
+  const [optDesc, setOptDesc] = useState("");
+
+  const [showAddQuestion, setShowAddQuestion] = useState(false);
+  const [newQText, setNewQText] = useState("");
+  const [newQSub, setNewQSub] = useState("");
+  const [newQFirst, setNewQFirst] = useState("");
+
+  const submitNewOption = () => {
+    if (!optLabel) return;
+    onAddOption && onAddOption(optLabel, optEmoji, optDesc);
+    setOptLabel(""); setOptEmoji(""); setOptDesc(""); setShowAddOption(false);
+  };
+
+  const submitNewQuestion = () => {
+    if (!newQText) return;
+    onAddQuestion && onAddQuestion(newQText, newQSub, newQFirst || "Custom");
+    setNewQText(""); setNewQSub(""); setNewQFirst(""); setShowAddQuestion(false);
+  };
+
   return (
     <div className="quiz-page">
       <div className="quiz-header">
-        <button className="btn-back" onClick={onBack}>← Back</button>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <button className="btn-back" onClick={onBack}>← Back</button>
+          <div className="inline-add-controls">
+            {!showAddOption && (
+              <button className="btn-small" onClick={() => setShowAddOption(true)}>+ Add Option</button>
+            )}
+            {showAddOption && (
+              <div className="add-option-form">
+                <input className="input-sm" placeholder="Label" value={optLabel} onChange={(e) => setOptLabel(e.target.value)} />
+                <input className="input-sm" placeholder="Emoji (optional)" value={optEmoji} onChange={(e) => setOptEmoji(e.target.value)} />
+                <input className="input-sm" placeholder="Short description (optional)" value={optDesc} onChange={(e) => setOptDesc(e.target.value)} />
+                <button className="btn-small" onClick={submitNewOption}>Add</button>
+                <button className="btn-small muted" onClick={() => setShowAddOption(false)}>Cancel</button>
+              </div>
+            )}
+
+            {!showAddQuestion && (
+              <button className="btn-small" onClick={() => setShowAddQuestion(true)}>+ Add Question</button>
+            )}
+            {showAddQuestion && (
+              <div className="add-question-form">
+                <input className="input-md" placeholder="Question text" value={newQText} onChange={(e) => setNewQText(e.target.value)} />
+                <input className="input-sm" placeholder="Subtitle (optional)" value={newQSub} onChange={(e) => setNewQSub(e.target.value)} />
+                <input className="input-sm" placeholder="First option label" value={newQFirst} onChange={(e) => setNewQFirst(e.target.value)} />
+                <button className="btn-small" onClick={submitNewQuestion}>Add Question</button>
+                <button className="btn-small muted" onClick={() => setShowAddQuestion(false)}>Cancel</button>
+              </div>
+            )}
+          </div>
+        </div>
         <div className="quiz-progress-wrap">
           <div className="quiz-progress-bar">
             <div className="quiz-progress-fill" style={{ width: `${((questionIndex + 1) / total) * 100}%` }} />

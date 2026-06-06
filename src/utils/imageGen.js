@@ -85,8 +85,27 @@ export const generateSingleImage = async (prompt, room, style) => {
   });
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `OpenAI API error ${response.status}`);
+    // Read body if possible to get message
+    const errBody = await response.json().catch(() => ({}));
+    const msg = errBody?.error?.message || errBody?.message || `OpenAI API error ${response.status}`;
+
+    // Handle common API failure cases gracefully by returning a fallback image
+    if (response.status === 401 || response.status === 403) {
+      console.error("OpenAI unauthorized:", msg);
+      const fallbackUrl = getFallbackImage(room, style);
+      const base64 = await urlToBase64(fallbackUrl).catch(() => fallbackUrl);
+      return { url: base64, prompt, status: "unauthorized", error: msg };
+    }
+
+    if (response.status === 429) {
+      console.error("OpenAI rate limit / quota exceeded:", msg);
+      const fallbackUrl = getFallbackImage(room, style);
+      const base64 = await urlToBase64(fallbackUrl).catch(() => fallbackUrl);
+      return { url: base64, prompt, status: "quota", error: msg };
+    }
+
+    // Other errors — throw so callers can handle / fallback as needed
+    throw new Error(msg);
   }
 
   const data = await response.json();
@@ -202,27 +221,6 @@ export const getMatchedListings = (answers, allListings) => {
 
 // Enhancement 3: Smart Snaphomz URL with encoded filters + UTM tracking
 export const buildSnaphomzUrl = (answers, archetype) => {
-  const budgetRangeMap = {
-    starter: "0-5000000",
-    mid: "5000000-15000000",
-    premium: "15000000-30000000",
-    luxury: "30000000-999999999",
-  };
-  const locationTypeMap = {
-    city: "urban",
-    suburban: "suburban",
-    nature: "countryside",
-    coastal: "coastal",
-  };
-  const params = new URLSearchParams({
-    style: answers.style || "",
-    location_type: locationTypeMap[answers.location] || "",
-    budget_range: budgetRangeMap[answers.budget] || "",
-    vibe: answers.vibe || "",
-    utm_source: "dream-home-ai",
-    utm_medium: "quiz",
-    utm_campaign: archetype?.name?.toLowerCase().replace(/\s+/g, "-") || "dream-home",
-    utm_content: `${answers.vibe}-${answers.style}`,
-  });
-  return `https://snaphomz.com/search?${params.toString()}`;
+  // Force redirect to root domain only (per product requirement)
+  return `https://snaphomz.com/`;
 };
